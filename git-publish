@@ -502,21 +502,14 @@ def inspect_menu(tmpdir, to_list, cc_list, patches, suppress_cc, in_reply_to,
         print('Stopping so you can inspect the patch emails:')
         print('  cd %s' % tmpdir)
         print()
-        output = git_send_email(to_list, cc_list, patches, suppress_cc, in_reply_to,
-                                thread, send_email_args=send_email_args, dry_run=True)
-        index = 0
+        # Do not dry-run here. git send-email --dry-run composes every
+        # message and prints one RCPT TO line per Cc. On a long series
+        # that runs before this menu and is only needed for 'p'.
         for patch in patches:
             with open(patch, 'rb') as f:
                 m = email.message_from_binary_file(f, policy=git_email_policy)
             if 'Subject' in m:
                 print(m['Subject'].strip())
-            # Print relevant 'Adding cc' lines from the git-send-email --dry-run output
-            while index < len(output) and len(output[index]):
-                line = output[index].replace('\r', '')
-                if line.find('Adding ') != -1:
-                    print('  ' + line)
-                index += 1
-            index += 1
         print()
         print("To:", "\n    ".join(to_list))
         if cc_list:
@@ -524,6 +517,7 @@ def inspect_menu(tmpdir, to_list, cc_list, patches, suppress_cc, in_reply_to,
         if in_reply_to:
             print("In-Reply-To:", in_reply_to)
         print()
+        sys.stdout.flush()
         a = menu_select([
                 ('c', 'Edit Cc list in editor (save after edit)'),
                 ('t', 'Edit To list in editor (save after edit)'),
@@ -551,7 +545,18 @@ def inspect_menu(tmpdir, to_list, cc_list, patches, suppress_cc, in_reply_to,
             new_content = edit_content(os.linesep.join(patches), '.txt')
             patches = [x for x in new_content.splitlines() if len(x.strip())]
         elif a == 'p':
+            # --suppress-cc=all puts the same To/Cc on every message.
+            # Dry-running the whole series reprints that list once per patch.
+            sample = patches[:1] if suppress_cc == 'all' and patches else patches
+            if len(sample) != len(patches):
+                print('Dry-run of %s only. Other messages use the same To/Cc.'
+                      % os.path.basename(sample[0]))
+            output = git_send_email(to_list, cc_list, sample, suppress_cc,
+                                    in_reply_to, thread,
+                                    send_email_args=send_email_args,
+                                    dry_run=True)
             print('\n'.join(output))
+            sys.stdout.flush()
         elif a == 'a':
             break
     return patches
