@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+#
+# Sent lines must appear as each message is handed off, not after
+# git send-email exits. fake_git simulates send-email; no mail is sent.
+
+from test_utils import git_publish_path
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+
+def fail(msg):
+    raise SystemExit('TEST FAILURE: %s' % msg)
+
+
+def prefer_fake_git():
+    # Windows executes git.cmd, not the extensionless fake git the
+    # Linux test runner puts on PATH. Point git.cmd at that script so
+    # send-email stays inside the simulator.
+    if os.name != 'nt':
+        return
+    fake = None
+    for entry in os.environ.get('PATH', '').split(os.pathsep):
+        candidate = os.path.join(entry, 'git')
+        if os.path.isfile(candidate):
+            fake = candidate
+            break
+    if fake is None:
+        fail('fake git is not on PATH')
+    shim = tempfile.mkdtemp(prefix='git-shim-')
+    cmd_path = os.path.join(shim, 'git.cmd')
+    body = '@echo off\r\nrem FAKE_GIT_SEND_EMAIL_SIMULATE\r\n"%s" "%s" %%*\r\n' % (
+        sys.executable, fake)
+    with open(cmd_path, 'w', newline='') as f:
+        f.write(body)
+    os.environ['PATH'] = shim + os.pathsep + os.environ.get('PATH', '')
+
+
+def use_simulated_git():
+    # Refuse to start unless send-email will hit fake_git. A real
+    # git.exe would try to deliver mail.
+    prefer_fake_git()
+    resolved = shutil.which('git')
+    if not resolved:
+        fail('git not found')
+    try:
+        blob = open(resolved, 'rb').read(4096)
+    except OSError as exc:
+        fail('refusing to send: cannot read %s (%s)' % (resolved, exc))
+    if b'FAKE_GIT_SEND_EMAIL_SIMULATE' not in blob:
+        fail('refusing to run real git send-email: %s' % resolved)
+    os.environ['GIT_PUBLISH_GIT'] = resolved
+
+
+def main():
+    use_simulated_git()
+    with open('C', 'w', newline='\n') as f:
+        f.write('third\n')
+    subprocess.check_call(['git', 'add', 'C'])
+    subprocess.check_call(['git', 'commit', '-q', '-m', 'Third commit'])
+    os.environ['FAKE_GIT_SEND_EMAIL_SIMULATE'] = '1'
+    os.environ['FAKE_GIT_SEND_EMAIL_DELAY'] = '1.5'
+
+    publish = [git_publish_path(), '-b', 'HEAD~2', '--no-cover-letter',
+               '--no-inspect-emails', '--to', 'somebody@example.com']
+    if os.name == 'nt':
+        publish.insert(0, sys.executable)
+    proc = subprocess.Popen(
+        publish,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    lines = []
+
+    def reader():
+        for raw in proc.stdout:
+            lines.append((time.monotonic(), raw.decode('utf-8', 'replace')))
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if any(text.startswith('Sent ') for _, text in lines):
+            break
+        time.sleep(0.05)
+    else:
+        proc.kill()
+        thread.join(timeout=5)
+        fail('no Sent line: %r' % [text for _, text in lines])
+
+    time.sleep(0.4)
+    sent = [text for _, text in lines if text.startswith('Sent ')]
+    if len(sent) != 1:
+        proc.kill()
+        thread.join(timeout=5)
+        fail('Sent lines were not printed one at a time: %r' % sent)
+
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        sent = [text for _, text in lines if text.startswith('Sent ')]
+        if len(sent) >= 2:
+            break
+        time.sleep(0.05)
+    else:
+        proc.kill()
+        thread.join(timeout=5)
+        fail('timed out waiting for the second Sent line: %r' % sent)
+
+    ret = proc.wait(timeout=30)
+    thread.join(timeout=5)
+    if ret != 0:
+        fail('git-publish exited %d: %r' % (
+            ret, [text for _, text in lines]))
+
+
+if __name__ == '__main__':
+    main()

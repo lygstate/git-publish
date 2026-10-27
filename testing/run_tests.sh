@@ -74,7 +74,13 @@ run_test_case()
     export FAKE_GIT_LOG="$TEST_DIR/fake_git.log"
     export FAKE_GIT_COMMAND_LOG="$TEST_DIR/fake_git_commands.log"
     echo -n "Running test case $test_name: "
-    if ! "$test_case" > "$TEST_DIR/test_output.log" 2>&1;then
+    # Python cases run under python3 so a missing executable bit still
+    # works. Bash cases are executed directly.
+    local runner=("$test_case")
+    if head -n 1 "$test_case" | grep -q python; then
+        runner=(python3 "$test_case")
+    fi
+    if ! "${runner[@]}" > "$TEST_DIR/test_output.log" 2>&1;then
         echo FAILED
         echo "--- Last 10 lines of test output: ---"
         tail -n 10 "$TEST_DIR/test_output.log"

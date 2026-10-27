@@ -268,12 +268,17 @@ def git_send_email(to_list, cc_list, patches, suppress_cc, in_reply_to, thread, 
     args += patches
     if dry_run:
         return _git_with_stderr(*args[1:])[0]
-    else:
-        stdout, stderr, ret_code = _git_with_stderr(*args[1:])
-        print('\n'.join(stdout))
-        print('\n'.join(stderr))
-        if ret_code != 0:
-            raise GitSendEmailError
+    if VERBOSE:
+        print('git ' + ' '.join(args[1:]))
+        sys.stdout.flush()
+    # git send-email prints "Sent ..." as each message goes out. Capturing
+    # that and printing after communicate() holds every line until the
+    # last message has been sent. Leave stdout attached to the terminal.
+    # GIT_PUBLISH_GIT is the git binary; tests point it at a simulator.
+    git_exe = os.environ.get('GIT_PUBLISH_GIT', 'git')
+    ret_code = subprocess.call([git_exe] + list(args[1:]))
+    if ret_code != 0:
+        raise GitSendEmailError
 
 GIT_HOOKDIR = None
 def git_get_hook_dir():
